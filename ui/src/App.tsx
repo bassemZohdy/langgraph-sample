@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiChat, apiDeleteThread, apiGetThreadMessages, apiHealth } from './lib/api';
+import { apiChat, apiGetThreadMessages, apiHealth } from './lib/api';
 import type { ChatMessage } from './lib/types';
-import { ThreadControls } from './components/ThreadControls';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
 import { ThreadList } from './components/ThreadList';
@@ -26,6 +25,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [messagesHidden, setMessagesHidden] = useState(false);
   const [lastUserMessage, setLastUserMessage] = useState('');
+  const [threadsVersion, setThreadsVersion] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
     const saved = localStorage.getItem('theme');
@@ -69,17 +69,7 @@ export default function App() {
     setMessages([]);
   }
 
-  async function deleteThread() {
-    if (!threadId) return;
-    if (!confirm(`Delete thread ${threadId}?`)) return;
-    try {
-      await apiDeleteThread(threadId);
-      setThreadId('');
-      setMessages([]);
-    } catch (e: any) {
-      alert(e?.message || 'Failed to delete thread');
-    }
-  }
+  // delete handled directly in ThreadList
 
   async function send() {
     if (!input.trim()) return;
@@ -119,6 +109,8 @@ export default function App() {
         }
         return [...copy, { role: 'assistant', content: assistantContent } as ChatMessage];
       });
+      // Thread messages have changed; refresh list
+      setThreadsVersion(v => v + 1);
     } catch (e: any) {
       setMessages(prev => {
         const copy = [...prev];
@@ -166,13 +158,11 @@ export default function App() {
 
       <div className={`layout ${sidebarOpen ? '' : 'no-sidebar'}`}>
         <aside className="sidebar">
-          <ThreadList onSelect={(id) => { setThreadId(id); loadThread(); }} />
-          <ThreadControls
-            threadId={threadId}
-            setThreadId={setThreadId}
-            onLoad={loadThread}
-            onNew={newThread}
-            onDelete={deleteThread}
+          <ThreadList
+            onSelect={(id) => { setThreadId(id); loadThread(); }}
+            onNewThread={newThread}
+            version={threadsVersion}
+            onChanged={() => setThreadsVersion(v => v + 1)}
           />
         </aside>
 

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { ChatMessage } from '../lib/types';
 
 type Props = {
@@ -5,8 +6,14 @@ type Props = {
 };
 
 export function MessageList({ messages }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
   return (
-    <div className="messages">
+    <div ref={ref} className="messages">
       {messages.map((m, i) => (
         <div key={i} className={`msg ${m.role} ${(m as any).pending ? 'pending' : ''}`}>
           <div className="role">{m.role}</div>

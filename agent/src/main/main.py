@@ -181,44 +181,43 @@ async def chat(request: ChatRequest):
     try:
         # Generate thread ID if not provided
         thread_id = request.thread_id or f"thread_{os.urandom(8).hex()}"
-        
+
         # Load conversation history from database
-        conversation_history = get_thread_messages(thread_id)
-        
+        prior_history = get_thread_messages(thread_id)
+
         # Add new user message
         user_message = {"role": "user", "content": request.message}
-        conversation_history.append(user_message)
-        
+        working_history = [*prior_history, user_message]
+
         # Prepare graph input and config for checkpointer
         graph_input = {
-            "messages": conversation_history,
+            "messages": working_history,
             "thread_id": thread_id
         }
         config = {"configurable": {"thread_id": thread_id}}
-        
+
         logger.info(f"Processing chat request for thread: {thread_id}")
-        
+
         # Invoke the graph
         result = graph.invoke(graph_input, config=config)
-        
-        # Extract response and normalized messages
+
+        # Extract assistant response from result, fallback safe
+        response_content = "Sorry, unexpected response format."
         if isinstance(result, dict) and "messages" in result:
-            messages = result["messages"] or []
-            normalized = _normalize_messages(messages)
-            conversation_history = normalized
+            normalized = _normalize_messages(result["messages"] or [])
+            # Prefer the last item from result if present
             if normalized:
-                response_content = normalized[-1].get("content", "Sorry, no response generated.")
-            else:
-                response_content = "Sorry, no response generated."
-        else:
-            response_content = "Sorry, unexpected response format."
-        
+                response_content = normalized[-1].get("content", response_content)
+
+        # Build final updated history explicitly to ensure DB count is correct
+        updated_history = [*working_history, {"role": "assistant", "content": response_content}]
+
         # Save updated conversation to database
-        save_thread_messages(thread_id, conversation_history)
-        
+        save_thread_messages(thread_id, updated_history)
+
         # Format response
-        formatted_messages = [ChatMessage(role=m["role"], content=m["content"]) for m in conversation_history]
-        
+        formatted_messages = [ChatMessage(role=m["role"], content=m["content"]) for m in updated_history]
+
         return ChatResponse(
             response=response_content,
             thread_id=thread_id,
