@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: ${PGDATA}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_EXTERNAL_PORT}:${POSTGRES_PORT}"
+    networks:
+      - langgraph-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    env_file: .env
+    ports:
+      - "${OLLAMA_EXTERNAL_PORT}:${OLLAMA_PORT}"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - langgraph-network
+    restart: unless-stopped
+    environment:
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE}
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_MODELS=${OLLAMA_MODELS}
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull ${LLM_MODEL} && wait"]
+    healthcheck:
+      # Use ollama CLI to check readiness (no curl dependency)
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  langgraph-agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    env_file: .env
+    ports:
+      - "${LANGGRAPH_EXTERNAL_PORT}:${LANGGRAPH_AGENT_PORT}"
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+      - LLM_MODEL=${LLM_MODEL}
+      - DATABASE_URI=${DATABASE_URI}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+    volumes:
+      - ./agent:/app
+    networks:
+      - langgraph-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${LANGGRAPH_AGENT_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      - UI_API_BASE_URL=${UI_API_BASE_URL}
+    ports:
+      - "${UI_EXTERNAL_PORT}:80"
+    networks:
+      - langgraph-network
+    depends_on:
+      langgraph-agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  langgraph-network:
+    driver: bridge
+
+volumes:
+  langgraph_data:
+  ollama_data:
+  postgres_data:
