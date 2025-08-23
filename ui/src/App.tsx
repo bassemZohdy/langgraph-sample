@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiChat, apiGetThreadMessages, apiHealth } from './lib/api';
+import { apiChat, apiGetThreadMessages, apiHealth, apiGetModels } from './lib/api';
 import type { ChatMessage } from './lib/types';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
 import { ThreadList } from './components/ThreadList';
-import { SunIcon, MoonIcon, MonitorIcon, SidebarOpenIcon, SidebarClosedIcon, EyeIcon, EyeOffIcon } from './components/Icons';
+import { SunIcon, MoonIcon, MonitorIcon, SidebarOpenIcon, SidebarClosedIcon } from './components/Icons';
+import type { Attachment } from './components/AttachmentUpload';
 
 function generateThreadId(): string {
   const arr = new Uint8Array(8);
@@ -23,9 +24,10 @@ export default function App() {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [messagesHidden, setMessagesHidden] = useState(false);
   const [lastUserMessage, setLastUserMessage] = useState('');
   const [threadsVersion, setThreadsVersion] = useState(0);
+  const [currentModel, setCurrentModel] = useState<string>('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
     const saved = localStorage.getItem('theme');
@@ -33,9 +35,26 @@ export default function App() {
     return 'system';
   });
 
+  // Get effective theme for components
+  function getEffectiveTheme(): 'light' | 'dark' {
+    if (theme === 'system') {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    return theme;
+  }
+
 
   useEffect(() => {
-    apiHealth().then(ok => setApiOk(ok));
+    apiHealth().then((ok: boolean) => setApiOk(ok));
+    // Load model information
+    apiGetModels().then((modelInfo) => {
+      if (modelInfo.primary_provider && modelInfo.providers[modelInfo.primary_provider]) {
+        const provider = modelInfo.providers[modelInfo.primary_provider];
+        setCurrentModel(`${modelInfo.primary_provider}:${provider.model}`);
+      }
+    }).catch(() => {
+      setCurrentModel('Unknown');
+    });
   }, []);
 
   // Apply theme and track system preference when in "system" mode
@@ -67,6 +86,7 @@ export default function App() {
   function newThread() {
     setThreadId(generateThreadId());
     setMessages([]);
+    setAttachments([]);
   }
 
   // delete handled directly in ThreadList
@@ -137,22 +157,35 @@ export default function App() {
   return (
     <div>
       <header>
-        <h1>LangGraph Agent</h1>
-        <div className="settings toolbar">
-          <button className="icon-btn" title={sidebarOpen ? 'Hide threads' : 'Show threads'} onClick={() => setSidebarOpen(v => !v)}>
-            {sidebarOpen ? <SidebarOpenIcon /> : <SidebarClosedIcon />}
-          </button>
-          <button className="icon-btn" title={messagesHidden ? 'Show messages' : 'Hide messages'} onClick={() => setMessagesHidden(v => !v)}>
-            {messagesHidden ? <EyeIcon /> : <EyeOffIcon />}
-          </button>
-          <button
-            className="icon-btn"
-            title={`Theme: ${theme}`}
-            onClick={() => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system')}
-          >
-            {theme === 'system' ? <MonitorIcon /> : theme === 'light' ? <SunIcon /> : <MoonIcon />}
-          </button>
-          <span className="muted">{apiOk === null ? 'Health…' : apiOk ? 'Healthy' : 'Unavailable'}</span>
+        <div className="header-content">
+          <div className="title-section">
+            <h1>LangGraph Agent</h1>
+            <div className="model-info">
+              <span className="model-label">Model:</span>
+              <span className="model-name">{currentModel || 'Loading...'}</span>
+            </div>
+          </div>
+          <div className="settings toolbar">
+            <div className="health-status">
+              <span 
+                className={`health-icon ${apiOk === null ? 'loading' : apiOk ? 'healthy' : 'error'}`}
+                title={apiOk === null ? 'Checking health...' : apiOk ? 'API Healthy' : 'API Unavailable'}
+              >
+                ●
+              </span>
+              <span className="health-text">{apiOk === null ? 'Checking...' : apiOk ? 'Healthy' : 'Unavailable'}</span>
+            </div>
+            <button className="icon-btn" title={sidebarOpen ? 'Hide threads' : 'Show threads'} onClick={() => setSidebarOpen(v => !v)}>
+              {sidebarOpen ? <SidebarOpenIcon /> : <SidebarClosedIcon />}
+            </button>
+            <button
+              className="icon-btn"
+              title={`Theme: ${theme}`}
+              onClick={() => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system')}
+            >
+              {theme === 'system' ? <MonitorIcon /> : theme === 'light' ? <SunIcon /> : <MoonIcon />}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -163,11 +196,12 @@ export default function App() {
             onNewThread={newThread}
             version={threadsVersion}
             onChanged={() => setThreadsVersion(v => v + 1)}
+            selectedThreadId={threadId}
           />
         </aside>
 
         <section className="chat">
-          {!messagesHidden && <MessageList messages={messages} />}
+          <MessageList messages={messages} theme={getEffectiveTheme()} />
           <Composer
             value={input}
             setValue={setInput}
@@ -175,13 +209,11 @@ export default function App() {
             onSend={send}
             onStop={stop}
             onRecallPrev={() => setInput(lastUserMessage)}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
           />
         </section>
       </div>
-
-      <footer>
-        <span className="muted">FastAPI + Ollama + Postgres • React UI</span>
-      </footer>
     </div>
   );
 }

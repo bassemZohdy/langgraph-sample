@@ -8,7 +8,7 @@ import sys
 import logging
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional, Union
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -25,7 +25,14 @@ from app.database import (
     save_thread_messages,
     delete_thread as db_delete_thread,
     get_all_threads,
+    save_document_embedding,
+    search_similar_documents,
+    get_document_by_id,
+    delete_document_embedding,
+    list_documents,
 )
+from app.models import model_manager
+from app.embeddings import embedding_service
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -63,33 +70,100 @@ class StreamRequest(BaseModel):
     stream_mode: Optional[str] = "values"
 
 
+class DocumentUploadResponse(BaseModel):
+    document_id: str
+    filename: str
+    content_type: str
+    chunks_created: int
+    message: str
+
+
+class DocumentSearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 5
+    similarity_threshold: Optional[float] = 0.7
+
+
+class DocumentSearchResponse(BaseModel):
+    query: str
+    results: List[Dict[str, Any]]
+    count: int
+
+
 def _normalize_role(role: str) -> str:
     mapping = {"ai": "assistant", "human": "user"}
     return mapping.get(role, role or "assistant")
 
 
+def _clean_assistant_response(content: str) -> str:
+    """Lightweight fallback cleanup for responses that still have robotic prefixes."""
+    if not content or not isinstance(content, str):
+        return content
+    
+    # Minimal cleanup - only remove the most common prefixes as fallback
+    prefixes_to_remove = [
+        "assistant:",
+        "ai:",
+        "response:",
+        "assistant response:",
+    ]
+    
+    cleaned = content.strip()
+    
+    # Remove prefixes (case insensitive) - only as fallback
+    for prefix in prefixes_to_remove:
+        if cleaned.lower().startswith(prefix.lower()):
+            cleaned = cleaned[len(prefix):].strip()
+            break  # Only remove one prefix
+    
+    # Ensure proper capitalization
+    if cleaned and cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    
+    return cleaned
+
+
 def _stringify_content(content: Any) -> str:
     """Best-effort convert message content to a string.
-    - If a dict contains a 'text' field, prefer it.
-    - Otherwise JSON-encode dict/list, fallback to str().
+    - Extract actual text content from complex objects.
+    - Handle LangChain message objects properly.
     """
     try:
         if isinstance(content, str):
             return content
+        
         if isinstance(content, dict):
-            if isinstance(content.get("text"), str):
-                return content["text"]
-            import json as _json
-            return _json.dumps(content, ensure_ascii=False)
-        if isinstance(content, (list, tuple)):
-            import json as _json
-            return _json.dumps(content, ensure_ascii=False)
-        return str(content)
+            # Check for common content fields in order of preference
+            for field in ["content", "text", "message"]:
+                if field in content and isinstance(content[field], str):
+                    return content[field]
+            
+            # If it looks like a LangChain message with metadata, extract just the content
+            if "content" in content and isinstance(content["content"], str):
+                return content["content"]
+            
+            # Fallback: if content has any string value, use it
+            for value in content.values():
+                if isinstance(value, str) and len(value.strip()) > 0:
+                    return value
+                    
+        # Handle list of content blocks (some APIs return this)
+        if isinstance(content, (list, tuple)) and len(content) > 0:
+            first_item = content[0]
+            if isinstance(first_item, dict) and "text" in first_item:
+                return first_item["text"]
+            elif isinstance(first_item, str):
+                return first_item
+        
+        # Last resort: convert to string, but avoid showing metadata
+        content_str = str(content)
+        # If it looks like a JSON object, don't return it
+        if content_str.startswith("{") and "additional_kwargs" in content_str:
+            return "Error: Could not extract message content"
+        
+        return content_str
     except Exception:
-        try:
-            return str(content)
-        except Exception:
-            return ""
+        return "Error: Could not parse message content"
 
 
 def _normalize_message(msg: Any) -> Dict[str, str]:
@@ -98,9 +172,21 @@ def _normalize_message(msg: Any) -> Dict[str, str]:
         role = _normalize_role(msg.get("role", "assistant"))
         content = _stringify_content(msg.get("content", ""))
         return {"role": role, "content": content}
-    # LangChain BaseMessage style
-    role = _normalize_role(getattr(msg, "type", "assistant"))
-    content = _stringify_content(getattr(msg, "content", str(msg)))
+    
+    # LangChain BaseMessage style - check for both 'type' and 'role' attributes
+    if hasattr(msg, 'type'):
+        role = _normalize_role(getattr(msg, "type", "assistant"))
+    elif hasattr(msg, 'role'):
+        role = _normalize_role(getattr(msg, "role", "assistant"))
+    else:
+        role = "assistant"
+    
+    # Extract content from LangChain message object
+    if hasattr(msg, 'content'):
+        content = _stringify_content(getattr(msg, "content", ""))
+    else:
+        content = _stringify_content(str(msg))
+    
     return {"role": role, "content": content}
 
 
@@ -167,6 +253,23 @@ async def health_check():
     }
 
 
+@app.get("/models")
+async def get_available_models():
+    """Get information about available model providers."""
+    try:
+        providers = model_manager.get_available_providers()
+        primary_provider = model_manager.get_primary_provider()
+        
+        return {
+            "providers": providers,
+            "primary_provider": primary_provider.value if primary_provider else None,
+            "total_providers": len(providers)
+        }
+    except Exception as e:
+        logger.error(f"Error getting model information: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get model information: {str(e)}")
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
@@ -207,7 +310,9 @@ async def chat(request: ChatRequest):
             normalized = _normalize_messages(result["messages"] or [])
             # Prefer the last item from result if present
             if normalized:
-                response_content = normalized[-1].get("content", response_content)
+                raw_content = normalized[-1].get("content", response_content)
+                # Clean up robotic prefixes for a more natural conversation
+                response_content = _clean_assistant_response(raw_content)
 
         # Build final updated history explicitly to ensure DB count is correct
         updated_history = [*working_history, {"role": "assistant", "content": response_content}]
@@ -344,6 +449,182 @@ async def stream_graph(request: StreamRequest):
     except Exception as e:
         logger.error(f"Error in stream endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Graph streaming failed: {str(e)}")
+
+
+@app.post("/documents/upload", response_model=DocumentUploadResponse)
+async def upload_document(file: UploadFile = File(...)):
+    """
+    Upload a document and create embeddings for vector similarity search.
+    
+    Args:
+        file: The uploaded file
+        
+    Returns:
+        Upload response with processing details
+    """
+    try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+        
+        # Read file content
+        file_content = await file.read()
+        content_type = file.content_type or 'application/octet-stream'
+        
+        # Generate document ID
+        import hashlib
+        content_hash = hashlib.md5(file_content).hexdigest()
+        document_id = f"doc_{content_hash}_{int(os.urandom(4).hex(), 16)}"
+        
+        logger.info(f"Processing document upload: {file.filename} ({content_type})")
+        
+        # Process document and create embeddings
+        processed_chunks = embedding_service.process_document(
+            document_id=document_id,
+            filename=file.filename,
+            file_content=file_content,
+            content_type=content_type,
+            metadata={
+                'upload_timestamp': 'now()',
+                'file_hash': content_hash
+            }
+        )
+        
+        if not processed_chunks:
+            raise HTTPException(status_code=500, detail="Failed to process document")
+        
+        # Save chunks to database
+        saved_count = 0
+        for chunk_data in processed_chunks:
+            try:
+                save_document_embedding(
+                    document_id=chunk_data['document_id'],
+                    filename=chunk_data['filename'],
+                    content_type=chunk_data['content_type'],
+                    content=chunk_data['content'],
+                    embedding=chunk_data['embedding'],
+                    metadata=chunk_data['metadata']
+                )
+                saved_count += 1
+            except Exception as e:
+                logger.error(f"Failed to save chunk {chunk_data['document_id']}: {e}")
+                continue
+        
+        return DocumentUploadResponse(
+            document_id=document_id,
+            filename=file.filename,
+            content_type=content_type,
+            chunks_created=saved_count,
+            message=f"Successfully processed {file.filename} into {saved_count} searchable chunks"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Document upload failed: {str(e)}")
+
+
+@app.post("/documents/search", response_model=DocumentSearchResponse)
+async def search_documents(request: DocumentSearchRequest):
+    """
+    Search documents using vector similarity.
+    
+    Args:
+        request: Search request with query and parameters
+        
+    Returns:
+        Search results with similarity scores
+    """
+    try:
+        logger.info(f"Searching documents for query: {request.query[:100]}...")
+        
+        # Perform similarity search
+        results = embedding_service.search_similar_content(
+            query=request.query,
+            limit=request.limit,
+            similarity_threshold=request.similarity_threshold
+        )
+        
+        return DocumentSearchResponse(
+            query=request.query,
+            results=results,
+            count=len(results)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error searching documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Document search failed: {str(e)}")
+
+
+@app.get("/documents")
+async def list_all_documents(limit: int = 100, offset: int = 0):
+    """
+    List all uploaded documents with pagination.
+    
+    Args:
+        limit: Maximum number of documents to return
+        offset: Number of documents to skip
+        
+    Returns:
+        List of document information
+    """
+    try:
+        documents = list_documents(limit=limit, offset=offset)
+        return {"documents": documents, "count": len(documents)}
+        
+    except Exception as e:
+        logger.error(f"Error listing documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
+
+
+@app.get("/documents/{document_id}")
+async def get_document(document_id: str):
+    """
+    Get a specific document by ID.
+    
+    Args:
+        document_id: The document identifier
+        
+    Returns:
+        Document data
+    """
+    try:
+        document = get_document_by_id(document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        return document
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get document: {str(e)}")
+
+
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: str):
+    """
+    Delete a document and its embeddings.
+    
+    Args:
+        document_id: The document identifier
+        
+    Returns:
+        Deletion confirmation
+    """
+    try:
+        success = delete_document_embedding(document_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        return {"message": f"Document {document_id} deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
 
 
 if __name__ == "__main__":

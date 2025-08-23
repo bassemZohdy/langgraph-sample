@@ -71,3 +71,9 @@ export const PlusIcon = ({ size = 18, className }: Props) => (
     <line x1="5" y1="12" x2="19" y2="12"/>
   </svg>
 );
+
+export const AttachmentIcon = ({ size = 18, className }: Props) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49L11.05 4.46a4 4 0 115.66 5.66l-7.28 7.28a2 2 0 01-2.83-2.83l7.28-7.28"/>
+  </svg>
+);

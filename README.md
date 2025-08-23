@@ -1,6 +1,6 @@
-# LangGraph Agent (FastAPI + Ollama + Postgres)
+# LangGraph Multi-Model Agent
 
-A compact LangGraph application that serves a chat agent via FastAPI, uses Ollama for local LLM inference, and persists conversation state and LangGraph checkpoints in PostgreSQL. This repo is fully open source and does not require any commercial licenses.
+A comprehensive LangGraph application that serves a chat agent via FastAPI with support for multiple AI providers (Ollama, OpenAI, Anthropic, Groq, Together AI), and persists conversation state and LangGraph checkpoints in PostgreSQL. This repo is fully open source and does not require any commercial licenses.
 
 ## 🚀 Quick Start
 
@@ -33,8 +33,8 @@ A compact LangGraph application that serves a chat agent via FastAPI, uses Ollam
 
 ### Services
 - PostgreSQL: Persistent storage for conversation messages and LangGraph checkpoints.
-- Ollama: Local LLM server; pulls and runs the model set in `LLM_MODEL` (default `phi3:mini`).
-- LangGraph Agent: FastAPI app exposing chat/graph endpoints.
+- Ollama: Local LLM server; pulls and runs the model set in `OLLAMA_MODEL` (default `phi3:mini`).
+- LangGraph Agent: FastAPI app with multi-model support exposing chat/graph endpoints.
 - UI: React + Vite static app served by Nginx, calls the agent API.
 
 Note: Redis was removed; the current stack does not depend on Redis.
@@ -49,11 +49,61 @@ Note: Redis was removed; the current stack does not depend on Redis.
 
 All configuration is managed through environment variables in `.env`.
 
-### Core
+### 🤖 Multi-Model AI Provider Support
+
+The agent now supports multiple AI providers based on available API keys. Configure your preferred providers by uncommenting and setting the appropriate environment variables:
+
+#### Model Provider Priority
 ```bash
-NODE_ENV=development
-LLM_MODEL=phi3:mini
+# Set priority order (first available provider will be used)
+MODEL_PROVIDER_PRIORITY=ollama,openai,anthropic,groq,together
+
+# Global model parameters (applied to all providers)
+MODEL_TEMPERATURE=0.7
+MODEL_TOP_P=0.9
+MODEL_MAX_TOKENS=500
+```
+
+#### Ollama (Local/Self-hosted)
+```bash
 OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_MODEL=phi3:mini  # Default model
+# No API key required
+```
+
+**Popular Ollama Models by Size:**
+- `gemma2:2b` - Minimal (2B params, ~1.4GB) - Lowest resource usage
+- `phi3:mini` - Small (3.8B params, ~2.3GB) - **Default - Good balance of size/performance**
+- `llama3.2:3b` - Medium (3B params, ~2GB) - Better reasoning
+- `llama3.2:8b` - Large (8B params, ~4.7GB) - High performance
+- `llama3.1:70b` - Very Large (70B params, ~40GB) - Maximum capability
+
+#### OpenAI
+```bash
+OPENAI_API_KEY=sk-your-openai-api-key-here
+OPENAI_MODEL=gpt-3.5-turbo
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+#### Anthropic (Claude)
+```bash
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key-here
+ANTHROPIC_MODEL=claude-3-haiku-20240307
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+```
+
+#### Groq
+```bash
+GROQ_API_KEY=gsk_your-groq-api-key-here
+GROQ_MODEL=llama3-8b-8192
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+```
+
+#### Together AI
+```bash
+TOGETHER_API_KEY=your-together-api-key-here
+TOGETHER_MODEL=meta-llama/Llama-2-7b-chat-hf
+TOGETHER_BASE_URL=https://api.together.xyz/v1
 ```
 
 ### Database
@@ -75,12 +125,14 @@ UI_EXTERNAL_PORT=3000
 ```
 
 ## 🧠 Features
-- Memory persistence: PostgreSQL-backed LangGraph checkpointer; falls back to in-memory if DB unavailable.
-- Threaded conversations: Multiple threads keyed by `thread_id` with message history stored in DB.
-- Local-first LLM: Uses Ollama with `LLM_MODEL` you choose.
-- Health checks: Container and app health endpoints.
-- Centralized config: Single `.env` for all services.
-- Runtime UI config: UI reads `UI_API_BASE_URL` via `/config.js` generated at container startup.
+- **Multi-Model Support**: Supports 5 AI providers (Ollama, OpenAI, Anthropic, Groq, Together AI) with automatic failover
+- **Smart Provider Selection**: Configurable priority order with automatic selection based on available API keys
+- **Memory persistence**: PostgreSQL-backed LangGraph checkpointer; falls back to in-memory if DB unavailable
+- **Threaded conversations**: Multiple threads keyed by `thread_id` with message history stored in DB
+- **Local-first option**: Uses Ollama for completely local/offline AI inference
+- **Health checks**: Container and app health endpoints
+- **Centralized config**: Single `.env` for all services and AI providers
+- **Runtime UI config**: UI reads `UI_API_BASE_URL` via `/config.js` generated at container startup
 
 ## 📝 API Usage
 
@@ -88,6 +140,7 @@ Base URL: `http://localhost:8000`
 
 - GET `/` — Service info
 - GET `/health` — Health check
+- GET `/models` — Available AI providers and current configuration
 
 - POST `/chat`
   - Body:
@@ -126,10 +179,11 @@ Base URL: `http://localhost:8000`
   - Returns Server-Sent-Events style lines: `data: { ... }` per chunk.
 
 ## 🧩 How It Works
-- `agent/src/main/app/graph.py` builds a `StateGraph` with a `chatbot` node that calls Ollama.
-- `agent/src/main/app/database.py` stores and retrieves conversation threads and messages in PostgreSQL.
-- `agent/src/main/main.py` exposes FastAPI routes for chat, invoke, and streaming.
-- Docker Compose brings up Postgres, Ollama, and the agent in one network.
+- `agent/src/main/app/models.py` manages multiple AI providers with automatic selection and failover
+- `agent/src/main/app/graph.py` builds a `StateGraph` with a `chatbot` node that uses the model manager
+- `agent/src/main/app/database.py` stores and retrieves conversation threads and messages in PostgreSQL
+- `agent/src/main/main.py` exposes FastAPI routes for chat, invoke, streaming, and model information
+- Docker Compose brings up Postgres, Ollama, and the agent in one network
 
 ## 🧪 Development
 

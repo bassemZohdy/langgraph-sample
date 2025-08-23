@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/attachmentupload.tsx","./src/components/composer.tsx","./src/components/icons.tsx","./src/components/messagecontent.tsx","./src/components/messagelist.tsx","./src/components/threadcontrols.tsx","./src/components/threadlist.tsx","./src/lib/api.ts","./src/lib/types.ts"],"version":"5.9.2"}

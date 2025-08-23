@@ -1,5 +1,5 @@
 """
-LangGraph OSS agent implementation with Ollama integration and PostgreSQL memory.
+LangGraph OSS agent implementation with multi-model support and PostgreSQL memory.
 This is a pure open-source solution without licensing requirements.
 """
 
@@ -8,11 +8,12 @@ import logging
 from typing import Annotated, Dict, Any, List
 from typing_extensions import TypedDict
 
-import requests
 import psycopg2
 from psycopg2.pool import SimpleConnectionPool
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+
+from .models import model_manager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class State(TypedDict):
 
 def chatbot_node(state: State) -> Dict[str, Any]:
     """
-    Main chatbot node that processes messages using Ollama.
+    Main chatbot node that processes messages using available AI models.
     
     Args:
         state: Current graph state with messages and thread_id
@@ -53,136 +54,64 @@ def chatbot_node(state: State) -> Dict[str, Any]:
     
     logger.info(f"Processing message for thread {thread_id}: {user_message[:100]}...")
     
-    # Get response from Ollama
-    assistant_response = call_ollama(conversation_context, thread_id)
+    # Get response from the configured model provider
+    assistant_response = model_manager.call_model(conversation_context, thread_id)
     
+    # Ensure we return a clean string response
+    if isinstance(assistant_response, dict):
+        # If the response is a dict, extract the content
+        assistant_response = assistant_response.get("content", str(assistant_response))
+    elif not isinstance(assistant_response, str):
+        # Convert any non-string response to string
+        assistant_response = str(assistant_response)
+    
+    # Clean the response - this will be handled in main.py during normalization
     return {
-        "messages": [{"role": "assistant", "content": assistant_response}]
+        "messages": [{"role": "assistant", "content": assistant_response.strip()}]
     }
 
 
 def build_conversation_context(messages: List[Dict[str, Any]], current_message: str) -> str:
     """
-    Build conversation context for Ollama from message history.
+    Build conversation context for AI models with natural response instructions.
     
     Args:
         messages: List of previous messages
         current_message: Current user message
         
     Returns:
-        Formatted conversation context
+        Formatted conversation context with natural response guidelines
     """
-    if len(messages) <= 1:
-        return current_message
+    # Start with system instructions for natural conversation
+    context = """You are a helpful AI assistant engaged in a natural conversation. Follow these guidelines:
+
+RESPONSE STYLE:
+- Respond directly and naturally, as if speaking to a friend
+- Do NOT start responses with "Assistant:", "AI:", "Response:", or similar prefixes
+- Do NOT mention that you are an AI, assistant, or language model unless directly asked
+- Be conversational, helpful, and engaging
+- Start your response immediately with the actual content
+
+"""
     
-    context = "Previous conversation:\n"
-    for msg in messages[:-1]:  # All except the latest
-        if isinstance(msg, dict):
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            context += f"{role.capitalize()}: {content}\n"
+    # Add conversation history if available
+    if len(messages) > 1:
+        context += "CONVERSATION HISTORY:\n"
+        for msg in messages[:-1]:  # All except the latest
+            if isinstance(msg, dict):
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                role_label = "Human" if role == "user" else "You"
+                context += f"{role_label}: {content}\n"
+        context += "\n"
     
-    context += f"\nCurrent user message: {current_message}"
-    context += "\n\nPlease respond naturally considering the conversation history:"
+    # Add current message and final instruction
+    context += f"CURRENT MESSAGE: {current_message}\n\n"
+    context += "Respond naturally and directly to the human's message above:"
     
     return context
 
 
-def call_ollama(prompt: str, thread_id: str) -> str:
-    """
-    Make API call to Ollama service.
-    
-    Args:
-        prompt: The input prompt/context
-        thread_id: Thread identifier for logging
-        
-    Returns:
-        Assistant response text
-    """
-    # Get Ollama configuration
-    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = os.getenv("LLM_MODEL", "phi3:mini")
-    # Timeouts and retry behavior (configurable)
-    try:
-        connect_timeout = float(os.getenv("OLLAMA_CONNECT_TIMEOUT", "10"))
-    except ValueError:
-        connect_timeout = 10.0
-    try:
-        request_timeout = float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "180"))
-    except ValueError:
-        request_timeout = 180.0
-    try:
-        retry_attempts = int(os.getenv("OLLAMA_RETRY_ATTEMPTS", "1"))
-    except ValueError:
-        retry_attempts = 1
-    try:
-        retry_backoff = float(os.getenv("OLLAMA_RETRY_BACKOFF", "3"))
-    except ValueError:
-        retry_backoff = 3.0
-    
-    try:
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "max_tokens": 500
-            }
-        }
-        
-        logger.info(
-            f"Calling Ollama API for thread {thread_id} (model={model}, base={ollama_base_url}, timeout={request_timeout}s)"
-        )
-
-        last_error: Exception | None = None
-        attempts = max(1, 1 + max(0, retry_attempts))
-        for attempt in range(1, attempts + 1):
-            try:
-                response = requests.post(
-                    f"{ollama_base_url}/api/generate",
-                    json=payload,
-                    timeout=(connect_timeout, request_timeout),
-                    headers={"Content-Type": "application/json"}
-                )
-                response.raise_for_status()
-
-                result = response.json()
-                assistant_message = result.get(
-                    "response", "I apologize, but I couldn't generate a proper response."
-                )
-
-                logger.info(f"✅ Ollama response received for thread {thread_id}")
-                return assistant_message.strip()
-            except requests.exceptions.Timeout as e:
-                last_error = e
-                if attempt < attempts:
-                    logger.warning(
-                        f"⏳ Ollama request timed out (attempt {attempt}/{attempts}) for thread {thread_id}; retrying in {retry_backoff}s"
-                    )
-                    import time
-                    time.sleep(retry_backoff)
-                else:
-                    raise
-
-    except requests.exceptions.Timeout:
-        logger.error(f"❌ Ollama request timeout for thread {thread_id}")
-        return "I apologize, but my response is taking too long. Please try again."
-        
-    except requests.exceptions.ConnectionError:
-        logger.error(f"❌ Cannot connect to Ollama service for thread {thread_id}")
-        return "I'm currently unable to connect to the AI service. Please check if Ollama is running and try again."
-        
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"❌ Ollama HTTP error for thread {thread_id}: {e}")
-        if e.response.status_code == 404:
-            return f"The AI model '{model}' is not available. Please check if the model is downloaded in Ollama."
-        return f"AI service error (HTTP {e.response.status_code}). Please try again later."
-        
-    except Exception as e:
-        logger.error(f"❌ Unexpected Ollama error for thread {thread_id}: {str(e)}")
-        return f"I encountered an unexpected error. Please try again. (Error: {str(e)[:100]})"
 
 
 def create_postgres_checkpointer():

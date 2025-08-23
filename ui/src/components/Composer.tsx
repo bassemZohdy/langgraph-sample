@@ -1,4 +1,6 @@
 
+import { AttachmentUpload, type Attachment } from './AttachmentUpload';
+
 type Props = {
   value: string;
   setValue: (v: string) => void;
@@ -6,9 +8,20 @@ type Props = {
   onSend: () => void;
   onStop?: () => void;
   onRecallPrev?: () => void;
+  attachments?: Attachment[];
+  onAttachmentsChange?: (attachments: Attachment[]) => void;
 };
 
-export function Composer({ value, setValue, sending, onSend, onStop, onRecallPrev }: Props) {
+export function Composer({ 
+  value, 
+  setValue, 
+  sending, 
+  onSend, 
+  onStop, 
+  onRecallPrev, 
+  attachments = [], 
+  onAttachmentsChange 
+}: Props) {
   return (
     <div className="composer">
       <textarea
@@ -34,6 +47,13 @@ export function Composer({ value, setValue, sending, onSend, onStop, onRecallPre
         }}
       />
       <div className="actions">
+        {onAttachmentsChange && (
+          <AttachmentUpload
+            attachments={attachments}
+            onAttachmentsChange={onAttachmentsChange}
+            disabled={sending}
+          />
+        )}
         {sending ? (
           <button className="danger" onClick={onStop}>Stop</button>
         ) : (
