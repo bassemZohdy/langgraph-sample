@@ -220,11 +220,33 @@ class ModelManager:
         
         payload = {
             "model": config["model"],
-            "messages": [system_message, user_message],
-            "temperature": float(os.getenv("MODEL_TEMPERATURE", "0.7")),
-            "top_p": float(os.getenv("MODEL_TOP_P", "0.9")),
-            "max_tokens": int(os.getenv("MODEL_MAX_TOKENS", "500"))
+            "messages": [system_message, user_message]
         }
+        
+        # Handle GPT-5 specific parameters and restrictions
+        if provider == ModelProvider.OPENAI and config["model"].startswith("gpt-5"):
+            # GPT-5 uses max_completion_tokens instead of max_tokens
+            payload["max_completion_tokens"] = int(os.getenv("MODEL_MAX_TOKENS", "500"))
+            
+            # GPT-5 temperature: Based on error, only default (1) is supported
+            # Let's not set temperature to use the default
+            
+            # GPT-5 specific parameters from official docs
+            reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "medium")
+            if reasoning_effort in ["minimal", "low", "medium", "high"]:
+                payload["reasoning_effort"] = reasoning_effort
+                
+            # GPT-5 verbosity parameter (from official docs)
+            verbosity = os.getenv("OPENAI_VERBOSITY", "medium")
+            if verbosity in ["low", "medium", "high"]:
+                payload["verbosity"] = verbosity
+                
+            # GPT-5 does NOT support top_p parameter (confirmed by error message)
+        else:
+            # For all other models (GPT-4, GPT-3.5, etc.), use standard parameters
+            payload["temperature"] = float(os.getenv("MODEL_TEMPERATURE", "0.7"))
+            payload["top_p"] = float(os.getenv("MODEL_TOP_P", "0.9"))
+            payload["max_tokens"] = int(os.getenv("MODEL_MAX_TOKENS", "500"))
         
         headers = {
             "Content-Type": "application/json",
@@ -242,6 +264,26 @@ class ModelManager:
             headers=headers,
             timeout=timeout
         )
+        
+        if response.status_code != 200:
+            error_detail = ""
+            try:
+                error_data = response.json()
+                error_message = error_data.get('error', {}).get('message', 'Unknown error')
+                error_detail = f" - {error_message}"
+                
+                # Handle specific GPT-5 parameter errors and provide suggestions
+                if "Unsupported parameter" in error_message:
+                    logger.warning(f"🔧 GPT-5 parameter issue detected. Consider updating model configuration.")
+                elif "Unsupported value" in error_message and "temperature" in error_message:
+                    logger.warning(f"🔧 GPT-5 temperature restriction: Use default temperature (1.0).")
+                    
+            except:
+                error_detail = f" - Raw response: {response.text[:200]}"
+            
+            logger.error(f"❌ {provider.value.upper()} API error {response.status_code}: {error_detail}")
+            logger.error(f"📝 Request payload: {payload}")
+            
         response.raise_for_status()
         
         result = response.json()

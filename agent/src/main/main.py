@@ -299,7 +299,8 @@ async def chat(request: ChatRequest):
 
         logger.info(f"Processing ReAct chat request for thread: {thread_id}")
 
-        # Invoke the ReAct graph
+        # Invoke the ReAct graph with higher recursion limit
+        config["recursion_limit"] = 50  # Increase from default 25 to 50
         result = graph.invoke(react_state, config=config)
 
         # Extract assistant response from ReAct result
@@ -411,7 +412,8 @@ async def invoke_graph(request: InvokeRequest):
         else:
             react_state = request.input
         
-        # Invoke the graph
+        # Invoke the graph with higher recursion limit
+        config["recursion_limit"] = 50  # Increase from default 25 to 50
         result = graph.invoke(react_state, config=config)
         
         return InvokeResponse(output=result)

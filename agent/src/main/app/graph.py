@@ -108,8 +108,9 @@ def tool_execution_node(state: AgentState) -> Dict[str, Any]:
     tool_results = state.get("tool_results", [])
     current_step = state.get("current_step", 0)
     
-    if not next_action or next_action == "final_answer":
+    if not next_action or next_action == "final_answer" or next_action.lower().strip() == "final_answer":
         # No tool to execute, return state unchanged
+        logger.info(f"Skipping tool execution for action: {next_action}")
         return {}
     
     logger.info(f"Executing tool: {next_action}")
@@ -120,6 +121,47 @@ def tool_execution_node(state: AgentState) -> Dict[str, Any]:
         if key.startswith("tool_"):
             param_name = key[5:]  # Remove 'tool_' prefix
             tool_params[param_name] = value
+    
+    # Debug logging for parameter issues
+    logger.info(f"Tool {next_action} parameters: {tool_params}")
+    
+    # Check for repeated failed attempts to prevent infinite loops
+    failed_attempts = 0
+    for result in tool_results:
+        if result.get('tool_name') == next_action and not result.get('success', True):
+            failed_attempts += 1
+    
+    # If tool has failed 3+ times, force synthesis evaluation
+    if failed_attempts >= 3:
+        logger.warning(f"Tool {next_action} has failed {failed_attempts} times. Forcing synthesis evaluation.")
+        return {
+            "tool_results": tool_results + [{
+                "step": current_step,
+                "tool_name": next_action,
+                "tool_params": tool_params,
+                "success": False,
+                "content": "",
+                "error": f"Tool {next_action} failed {failed_attempts} times. Skipping to avoid infinite loop.",
+                "metadata": {"forced_skip": True},
+                "timestamp": "now()"
+            }]
+        }
+    
+    # Add fallback parameter handling for web_search if query is missing
+    if next_action == "web_search" and 'query' not in tool_params:
+        # Try to extract user's intent from the conversation context
+        messages = state.get("messages", [])
+        if messages:
+            last_user_message = None
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    last_user_message = msg.get("content", "")
+                    break
+            
+            if last_user_message:
+                # Use the user's last message as the search query
+                tool_params['query'] = last_user_message
+                logger.info(f"Using fallback query from user message: {last_user_message[:100]}...")
     
     # Execute the tool
     tool_result = tool_registry.execute_tool(next_action, **tool_params)
@@ -489,19 +531,51 @@ def parse_synthesis_response(response: str) -> tuple[str, str, Dict[str, Any]]:
         action_match = re.search(r'\*\*Action:\*\*\s*(.*?)(?=\*\*Action Parameters:\*\*|$)', response, re.DOTALL | re.IGNORECASE)
         if action_match:
             action = action_match.group(1).strip()
+            # Clean up action - remove quotes, whitespace, and handle variations
+            action = action.strip('"\'').strip()
+            
+            # Handle GPT-5 multiline responses - take only the first line/word for action
+            action_lines = action.split('\n')
+            if len(action_lines) > 1:
+                # Take only the first line as the action
+                action = action_lines[0].strip()
+            
+            # Further clean - take only the first word if there are multiple words
+            action_words = action.split()
+            if action_words:
+                action = action_words[0].strip()
+            
+            # Normalize final_answer variations
+            if action.lower().replace('_', '').replace(' ', '') in ['finalanswer', 'final', 'answer']:
+                action = "final_answer"
         
         # Extract action parameters
         params_match = re.search(r'\*\*Action Parameters:\*\*\s*(.*?)$', response, re.DOTALL | re.IGNORECASE)
         if params_match:
             params_text = params_match.group(1).strip()
-            # Parse key=value pairs
+            # Parse key=value pairs with enhanced flexibility for GPT-5
             for line in params_text.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                    
                 if '=' in line:
                     key, value = line.split('=', 1)
                     key = key.strip()
                     value = value.strip().strip('"\'')
                     # Add tool_ prefix for state management
                     action_params[f'tool_{key}'] = value
+                elif ':' in line:
+                    # Handle colon format: "query: search term"
+                    key, value = line.split(':', 1)
+                    key = key.strip()
+                    value = value.strip().strip('"\'')
+                    action_params[f'tool_{key}'] = value
+                elif line and not line.startswith('-') and not line.startswith('*'):
+                    # If it's just text without key-value format, try to infer
+                    # For web_search, assume it's a query if no other params are set
+                    if action == "web_search" and not any(k.endswith('query') for k in action_params.keys()):
+                        action_params['tool_query'] = line
         
         logger.info(f"Parsed synthesis response - Evaluation: {evaluation[:100]}..., Action: {action}")
         
@@ -538,19 +612,51 @@ def parse_react_response(response: str) -> tuple[str, str, Dict[str, Any]]:
         action_match = re.search(r'\*\*Action:\*\*\s*(.*?)(?=\*\*Action Parameters:\*\*|$)', response, re.DOTALL | re.IGNORECASE)
         if action_match:
             action = action_match.group(1).strip()
+            # Clean up action - remove quotes, whitespace, and handle variations
+            action = action.strip('"\'').strip()
+            
+            # Handle GPT-5 multiline responses - take only the first line/word for action
+            action_lines = action.split('\n')
+            if len(action_lines) > 1:
+                # Take only the first line as the action
+                action = action_lines[0].strip()
+            
+            # Further clean - take only the first word if there are multiple words
+            action_words = action.split()
+            if action_words:
+                action = action_words[0].strip()
+            
+            # Normalize final_answer variations
+            if action.lower().replace('_', '').replace(' ', '') in ['finalanswer', 'final', 'answer']:
+                action = "final_answer"
         
         # Extract action parameters
         params_match = re.search(r'\*\*Action Parameters:\*\*\s*(.*?)$', response, re.DOTALL | re.IGNORECASE)
         if params_match:
             params_text = params_match.group(1).strip()
-            # Parse key=value pairs
+            # Parse key=value pairs with enhanced flexibility for GPT-5
             for line in params_text.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                    
                 if '=' in line:
                     key, value = line.split('=', 1)
                     key = key.strip()
                     value = value.strip().strip('"\'')
                     # Add tool_ prefix for state management
                     action_params[f'tool_{key}'] = value
+                elif ':' in line:
+                    # Handle colon format: "query: search term"
+                    key, value = line.split(':', 1)
+                    key = key.strip()
+                    value = value.strip().strip('"\'')
+                    action_params[f'tool_{key}'] = value
+                elif line and not line.startswith('-') and not line.startswith('*'):
+                    # If it's just text without key-value format, try to infer
+                    # For web_search, assume it's a query if no other params are set
+                    if action == "web_search" and not any(k.endswith('query') for k in action_params.keys()):
+                        action_params['tool_query'] = line
         
         logger.info(f"Parsed ReAct response - Thought: {thought[:100]}..., Action: {action}")
         
@@ -614,10 +720,35 @@ def create_react_graph() -> StateGraph:
     """
     Create and compile the ReAct agent graph with proper reasoning loop.
     
-    Architecture:
-    START → reasoning → tool_execution → intermediate_synthesis → reasoning (loop)
-                ↓                              ↓
-            synthesis_evaluation          final_answer → END
+    Optimized Architecture (tool_execution → intermediate_synthesis):
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ START → reasoning ──→ tool_execution ──→ intermediate_synthesis │
+    │             │                                    │               │
+    │             │                                    ↓               │
+    │             │                              final_answer → END   │
+    │             │                                    │               │
+    │             └────────────────────────────────────┘               │
+    │                        (continue loop)                          │
+    └─────────────────────────────────────────────────────────────────┘
+    
+    Flow Explanation:
+    1. reasoning: Agent thinks and decides next action (tool or synthesis)
+    2. tool_execution: Executes tools and goes directly to synthesis
+    3. intermediate_synthesis: Evaluates tool results + overall progress, decides next step
+    4. final_answer: Generates comprehensive final response
+    
+    Benefits of this Flow:
+    ✅ Better loop prevention: Systematic evaluation after every tool use
+    ✅ Progress tracking: Always assesses what's been accomplished
+    ✅ Strategic decisions: More deliberate about continuing vs finishing
+    ✅ GPT-5 optimized: Handles GPT-5's tendency to repeat failed actions
+    
+    Routing Logic:
+    - reasoning → tool_execution (if tool needed)  
+    - reasoning → intermediate_synthesis (if ready to evaluate without tool)
+    - tool_execution → intermediate_synthesis (always - systematic evaluation)
+    - intermediate_synthesis → reasoning (if more work needed)
+    - intermediate_synthesis → final_answer (if ready to finish)
     
     Returns:
         Compiled LangGraph ReAct agent instance
@@ -649,8 +780,9 @@ def create_react_graph() -> StateGraph:
         }
     )
     
-    # After tool execution, always go back to reasoning
-    builder.add_edge("tool_execution", "reasoning")
+    # After tool execution, go to intermediate synthesis for better progress evaluation
+    # This prevents infinite loops and provides systematic progress assessment
+    builder.add_edge("tool_execution", "intermediate_synthesis")
     
     # Conditional routing from intermediate synthesis
     builder.add_conditional_edges(

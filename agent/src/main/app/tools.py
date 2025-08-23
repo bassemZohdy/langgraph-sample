@@ -64,9 +64,24 @@ Parameters:
 
 Example: web_search(query="latest developments in AI 2024", max_results=3)"""
     
-    def execute(self, query: str, max_results: int = 5) -> ToolResult:
+    def execute(self, query: str = None, max_results: int = 5, results: int = None, **kwargs) -> ToolResult:
         """Execute web search."""
         try:
+            # Handle parameter variations (GPT models might use 'results' instead of 'max_results')
+            if results is not None:
+                max_results = results
+                
+            # Handle missing query parameter
+            if not query:
+                # Try to find query in kwargs or other parameter variations
+                query = kwargs.get('q', kwargs.get('search_query', kwargs.get('search_term', '')))
+                
+                if not query:
+                    return ToolResult(
+                        success=False,
+                        content="",
+                        error="Web search requires a 'query' parameter. Please provide what you want to search for."
+                    )
             # Simple DuckDuckGo search implementation
             # In production, you might use a proper search API like Serper, Tavily, or Google Custom Search
             
