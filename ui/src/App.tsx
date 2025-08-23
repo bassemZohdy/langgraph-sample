@@ -4,6 +4,7 @@ import type { ChatMessage } from './lib/types';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
 import { ThreadList } from './components/ThreadList';
+import { ReActSettings } from './components/ReActSettings';
 import { SunIcon, MoonIcon, MonitorIcon, SidebarOpenIcon, SidebarClosedIcon } from './components/Icons';
 import type { Attachment } from './components/AttachmentUpload';
 
@@ -28,6 +29,11 @@ export default function App() {
   const [threadsVersion, setThreadsVersion] = useState(0);
   const [currentModel, setCurrentModel] = useState<string>('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [reactSettings, setReActSettings] = useState({
+    showReasoningSteps: true,
+    enableReActMode: true,
+    maxIterations: 5
+  });
   const abortRef = useRef<AbortController | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
     const saved = localStorage.getItem('theme');
@@ -108,7 +114,10 @@ export default function App() {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
-      const res = await apiChat(text, threadId || undefined, { signal: controller.signal });
+      const res = await apiChat(text, threadId || undefined, { 
+        signal: controller.signal,
+        reactSettings: reactSettings 
+      });
       if (!threadId) setThreadId(res.thread_id);
 
       // Take only the latest assistant message from server
@@ -198,10 +207,18 @@ export default function App() {
             onChanged={() => setThreadsVersion(v => v + 1)}
             selectedThreadId={threadId}
           />
+          
+          <div className="sidebar-section">
+            <ReActSettings onSettingsChange={setReActSettings} />
+          </div>
         </aside>
 
         <section className="chat">
-          <MessageList messages={messages} theme={getEffectiveTheme()} />
+          <MessageList 
+            messages={messages} 
+            theme={getEffectiveTheme()}
+            showReasoningSteps={reactSettings.showReasoningSteps}
+          />
           <Composer
             value={input}
             setValue={setInput}

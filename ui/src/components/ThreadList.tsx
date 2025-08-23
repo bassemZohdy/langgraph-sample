@@ -115,7 +115,13 @@ export function ThreadList({ onSelect, onNewThread, version = 0, onChanged, sele
     <section>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Threads</h3>
-        <button className="icon-btn" title="New thread" onClick={onNewThread}><PlusIcon /></button>
+        <button 
+          className="icon-btn" 
+          title="Start a new conversation" 
+          onClick={onNewThread}
+        >
+          <PlusIcon />
+        </button>
       </div>
       <div className="threads-container">
         {threads.length === 0 && <div className="muted">No threads yet.</div>}
@@ -134,7 +140,7 @@ export function ThreadList({ onSelect, onNewThread, version = 0, onChanged, sele
             </div>
             <button 
               className="icon-btn sm thread-delete" 
-              title="Delete" 
+              title={`Delete "${t.displayName}" conversation`}
               onClick={(e) => { e.stopPropagation(); remove(t.thread_id); }}
             >
               <TrashIcon />

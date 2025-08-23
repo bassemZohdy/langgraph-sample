@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react';
 import type { ChatMessage } from '../lib/types';
-import { MessageContent } from './MessageContent';
+import { ReActMessage } from './ReActMessage';
 
 type Props = {
   messages: ChatMessage[];
   theme?: 'light' | 'dark';
+  showReasoningSteps?: boolean;
 };
 
-export function MessageList({ messages, theme = 'dark' }: Props) {
+export function MessageList({ messages, theme = 'dark', showReasoningSteps = true }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
@@ -38,7 +39,11 @@ export function MessageList({ messages, theme = 'dark' }: Props) {
                 {(m as any).pending ? (
                   <span className="thinking"><span className="spinner" /> Thinking...</span>
                 ) : (
-                  <MessageContent content={m.content} theme={theme} />
+                  <ReActMessage 
+                    content={m.content} 
+                    theme={theme}
+                    showReasoningSteps={showReasoningSteps}
+                  />
                 )}
               </div>
             </div>

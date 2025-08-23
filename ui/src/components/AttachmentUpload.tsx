@@ -204,7 +204,11 @@ export function AttachmentUpload({
         className={`icon-btn attachment-btn ${attachments.length > 0 ? 'has-attachments' : ''}`}
         onClick={openFileDialog}
         disabled={disabled || attachments.length >= maxFiles}
-        title={`Add attachments (${attachments.length}/${maxFiles})`}
+        title={
+          disabled ? "Upload disabled" :
+          attachments.length >= maxFiles ? `Maximum ${maxFiles} files allowed` :
+          `Add files for document search (${attachments.length}/${maxFiles})`
+        }
       >
         <AttachmentIcon />
         {attachments.length > 0 && (
@@ -241,12 +245,21 @@ export function AttachmentUpload({
                   <span className="attachment-size">{formatFileSize(attachment.size)}</span>
                 </div>
                 {attachment.progress !== undefined && attachment.progress < 100 && (
-                  <div className="attachment-progress">
+                  <div className="attachment-progress" title={`Uploading... ${attachment.progress}%`}>
                     <div 
                       className="attachment-progress-bar" 
                       style={{ width: `${attachment.progress}%` }}
                     />
+                    <span className="progress-text">{attachment.progress}%</span>
                   </div>
+                )}
+                {attachment.uploaded && attachment.chunks_created && (
+                  <span 
+                    className="attachment-success" 
+                    title={`Document uploaded and processed into ${attachment.chunks_created} searchable chunks`}
+                  >
+                    ✅ {attachment.chunks_created} chunks
+                  </span>
                 )}
                 {attachment.error && (
                   <span className="attachment-error" title={attachment.error}>❌</span>

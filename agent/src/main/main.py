@@ -18,7 +18,7 @@ import json
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from app.graph import graph
+from app.graph import graph, initialize_react_state
 from app.database import (
     init_db,
     get_thread_messages,
@@ -47,6 +47,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None
+    react_settings: Optional[Dict[str, Any]] = None
 
 
 class ChatResponse(BaseModel):
@@ -292,27 +293,39 @@ async def chat(request: ChatRequest):
         user_message = {"role": "user", "content": request.message}
         working_history = [*prior_history, user_message]
 
-        # Prepare graph input and config for checkpointer
-        graph_input = {
-            "messages": working_history,
-            "thread_id": thread_id
-        }
+        # Initialize ReAct state with user settings
+        react_state = initialize_react_state(working_history, thread_id, request.react_settings)
         config = {"configurable": {"thread_id": thread_id}}
 
-        logger.info(f"Processing chat request for thread: {thread_id}")
+        logger.info(f"Processing ReAct chat request for thread: {thread_id}")
 
-        # Invoke the graph
-        result = graph.invoke(graph_input, config=config)
+        # Invoke the ReAct graph
+        result = graph.invoke(react_state, config=config)
 
-        # Extract assistant response from result, fallback safe
+        # Extract assistant response from ReAct result
         response_content = "Sorry, unexpected response format."
-        if isinstance(result, dict) and "messages" in result:
-            normalized = _normalize_messages(result["messages"] or [])
-            # Prefer the last item from result if present
-            if normalized:
-                raw_content = normalized[-1].get("content", response_content)
-                # Clean up robotic prefixes for a more natural conversation
-                response_content = _clean_assistant_response(raw_content)
+        
+        # Check if this is a ReAct result with reasoning steps
+        if isinstance(result, dict):
+            if "final_answer" in result:
+                # ReAct agent result with reasoning steps
+                react_response = {
+                    "final_answer": result.get("final_answer", "No response generated"),
+                    "reasoning_steps": result.get("reasoning_steps", []),
+                    "tool_results": result.get("tool_results", []),
+                    "current_step": result.get("current_step", 0)
+                }
+                # Return structured ReAct data as JSON for UI to parse
+                response_content = json.dumps(react_response)
+            elif "messages" in result:
+                # Fallback to regular message format
+                normalized = _normalize_messages(result["messages"] or [])
+                if normalized:
+                    raw_content = normalized[-1].get("content", response_content)
+                    response_content = _clean_assistant_response(raw_content)
+            else:
+                # Direct content
+                response_content = str(result.get("content", result))
 
         # Build final updated history explicitly to ensure DB count is correct
         updated_history = [*working_history, {"role": "assistant", "content": response_content}]
@@ -392,8 +405,14 @@ async def invoke_graph(request: InvokeRequest):
         if "thread_id" in request.input and not config["configurable"].get("thread_id"):
             config["configurable"]["thread_id"] = request.input.get("thread_id")
         
+        # Initialize ReAct state if needed
+        if "messages" in request.input and "thread_id" in request.input:
+            react_state = initialize_react_state(request.input["messages"], request.input["thread_id"])
+        else:
+            react_state = request.input
+        
         # Invoke the graph
-        result = graph.invoke(request.input, config=config)
+        result = graph.invoke(react_state, config=config)
         
         return InvokeResponse(output=result)
         
@@ -425,8 +444,14 @@ async def stream_graph(request: StreamRequest):
                 if "thread_id" in request.input and not config["configurable"].get("thread_id"):
                     config["configurable"]["thread_id"] = request.input.get("thread_id")
                 
+                # Initialize ReAct state if needed for streaming
+                if "messages" in request.input and "thread_id" in request.input:
+                    react_state = initialize_react_state(request.input["messages"], request.input["thread_id"])
+                else:
+                    react_state = request.input
+                
                 # Stream the graph execution
-                stream = graph.stream(request.input, config=config, stream_mode=request.stream_mode)
+                stream = graph.stream(react_state, config=config, stream_mode=request.stream_mode)
                 
                 for chunk in stream:
                     # Format as JSON lines for streaming

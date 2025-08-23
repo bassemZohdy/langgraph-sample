@@ -19,6 +19,7 @@ class ModelProvider(Enum):
     ANTHROPIC = "anthropic"
     GROQ = "groq"
     TOGETHER = "together"
+    DEEPSEEK = "deepseek"
 
 
 class ModelManager:
@@ -37,18 +38,21 @@ class ModelManager:
             self.providers[ModelProvider.OLLAMA] = {
                 "enabled": True,
                 "base_url": ollama_url,
-                "model": os.getenv("OLLAMA_MODEL", "phi3:mini"),
+                "model": os.getenv("OLLAMA_MODEL", "llama3.2:1b"),
                 "api_key": None  # Ollama doesn't require API key
             }
             logger.info(f"✅ Ollama provider enabled: {ollama_url}")
         
-        # Check for OpenAI
+        # Check for OpenAI (GPT-5 Series - 2025)
+        # Default: gpt-5-nano ($0.05/1M input, $0.40/1M output)
+        # Available: gpt-5, gpt-5-mini, gpt-5-nano
+        # Features: 272k context, built-in reasoning, 94.6% AIME score
         openai_key = os.getenv("OPENAI_API_KEY")
         if openai_key:
             self.providers[ModelProvider.OPENAI] = {
                 "enabled": True,
                 "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-                "model": os.getenv("OPENAI_MODEL", "gpt-3.5-turbo"),
+                "model": os.getenv("OPENAI_MODEL", "gpt-5-nano"),
                 "api_key": openai_key
             }
             logger.info("✅ OpenAI provider enabled")
@@ -86,6 +90,17 @@ class ModelManager:
             }
             logger.info("✅ Together AI provider enabled")
         
+        # Check for DeepSeek
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+        if deepseek_key:
+            self.providers[ModelProvider.DEEPSEEK] = {
+                "enabled": True,
+                "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+                "model": os.getenv("DEEPSEEK_MODEL", "deepseek-r1"),
+                "api_key": deepseek_key
+            }
+            logger.info("✅ DeepSeek provider enabled")
+        
         if not self.providers:
             logger.warning("⚠️ No model providers configured! Check your environment variables.")
         else:
@@ -107,6 +122,7 @@ class ModelManager:
         # Default priority order
         default_priority = [
             ModelProvider.OPENAI,
+            ModelProvider.DEEPSEEK,
             ModelProvider.ANTHROPIC,
             ModelProvider.GROQ,
             ModelProvider.TOGETHER,
@@ -145,7 +161,7 @@ class ModelManager:
         try:
             if provider == ModelProvider.OLLAMA:
                 return self._call_ollama(prompt, thread_id, config)
-            elif provider in [ModelProvider.OPENAI, ModelProvider.GROQ, ModelProvider.TOGETHER]:
+            elif provider in [ModelProvider.OPENAI, ModelProvider.GROQ, ModelProvider.TOGETHER, ModelProvider.DEEPSEEK]:
                 return self._call_openai_compatible(prompt, thread_id, config, provider)
             elif provider == ModelProvider.ANTHROPIC:
                 return self._call_anthropic(prompt, thread_id, config)
